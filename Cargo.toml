@@ -1,0 +1,29 @@
+[package]
+name = "mentarch-recorder"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "A small native window recorder for Hyprland"
+license = "MIT"
+
+[features]
+live-portal-tests = []
+
+[dependencies]
+anyhow = "1"
+ashpd = { version = "0.13.13", features = ["screencast"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dirs = "6"
+futures-util = "0.3"
+gstreamer = { version = "0.25.4", features = ["v1_22"] }
+gtk = { package = "gtk4", version = "0.11.5", features = ["v4_12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

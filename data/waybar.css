@@ -1,0 +1,11 @@
+/* Window Recorder · Charcoal Lavender */
+#custom-recorder { color: #b4befe; background: transparent; padding: 0 8px; margin: 2px 0; border-radius: 4px; }
+#custom-recorder:hover { background: #313244; }
+#custom-recorder.selecting, #custom-recorder.ready, #custom-recorder.saving { color: #f9e2af; }
+#custom-recorder.starting, #custom-recorder.recording { color: #f38ba8; background: rgba(243, 139, 168, 0.12); }
+#custom-recorder.saved { color: #a6e3a1; }
+#custom-recorder.error { color: #f38ba8; }
+#recorder-menu { background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; border-radius: 6px; padding: 5px; }
+#recorder-menu menuitem { padding: 7px 12px; border-radius: 4px; }
+#recorder-menu menuitem:hover { background: #313244; color: #b4befe; }
+#recorder-menu separator { background: #45475a; min-height: 1px; margin: 4px 8px; }

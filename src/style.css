@@ -1,0 +1,31 @@
+/* Charcoal Lavender, scoped to the recorder rather than global GTK settings. */
+@define-color recorder_base #1e1e2e;
+@define-color recorder_inset #181825;
+@define-color recorder_surface #313244;
+@define-color recorder_border #45475a;
+@define-color recorder_text #cdd6f4;
+@define-color recorder_muted #a6adc8;
+@define-color recorder_accent #b4befe;
+@define-color recorder_red #f38ba8;
+.recorder-window, .recorder-window:backdrop { background: @recorder_base; color: @recorder_text; font-family: "Inter", sans-serif; }
+.recorder-window headerbar, .recorder-window headerbar:backdrop { background: @recorder_base; color: @recorder_text; border-bottom: 1px solid @recorder_border; box-shadow: none; }
+.recorder-window .title-2 { font-size: 19px; font-weight: 650; }
+.recorder-window .description { color: @recorder_muted; line-height: 1.45; }
+.recorder-window .dim-label { color: @recorder_muted; opacity: 1; }
+.recorder-window .recording-card { border-radius: 8px; padding: 20px; background: @recorder_inset; border: 1px solid @recorder_border; }
+.recorder-window .timer { font-family: "JetBrainsMono Nerd Font", monospace; font-size: 36px; font-weight: 400; font-feature-settings: "tnum"; color: @recorder_accent; }
+.recorder-window .caption { font-size: 11px; line-height: 1.5; }
+.recorder-window .accent-icon, .recorder-window spinner { color: @recorder_accent; }
+.recorder-window button, .recorder-window button:backdrop { background: @recorder_surface; color: @recorder_text; border: 1px solid @recorder_border; border-radius: 6px; box-shadow: none; text-shadow: none; -gtk-icon-shadow: none; }
+.recorder-window button:hover { background: @recorder_border; }
+.recorder-window button:active { background: #585b70; }
+.recorder-window button:focus-visible { outline: 2px solid @recorder_accent; outline-offset: 2px; }
+.recorder-window button.flat { background: transparent; border-color: transparent; }
+.recorder-window button.flat:hover { background: @recorder_surface; }
+.recorder-window button.suggested-action { background: @recorder_accent; color: @recorder_base; border-color: @recorder_accent; }
+.recorder-window button.suggested-action:hover { background: #c7ceff; }
+.recorder-window button.destructive-action { background: @recorder_red; color: @recorder_base; border-color: @recorder_red; }
+.recorder-window button.destructive-action:hover { background: #ffa5bc; }
+.recorder-window button:disabled { color: #7f849c; background: @recorder_surface; border-color: @recorder_border; }
+.recorder-window .pill { border-radius: 6px; font-weight: 600; }
+.recorder-window selection { background: @recorder_accent; color: @recorder_base; }

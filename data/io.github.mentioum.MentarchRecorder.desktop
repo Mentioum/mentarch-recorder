@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Window Recorder
+GenericName=Window Recorder
+Comment=Choose a window and save a video
+Exec=mentarch-recorder
+Icon=io.github.mentioum.MentarchRecorder
+Terminal=false
+Categories=AudioVideo;Recorder;GTK;
+Keywords=record;video;window;screencast;Hyprland;
+StartupNotify=true
