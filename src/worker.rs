@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::{
+    audio,
     engine::{self, Encoder, Recording, Update},
     output,
     portal::{self, Portal, Target},
@@ -16,7 +17,7 @@ use crate::{
 #[derive(Debug)]
 pub enum Command {
     Choose,
-    Record,
+    Record(audio::Settings),
     Stop,
     Cancel,
     Shutdown,
@@ -135,11 +136,11 @@ async fn run(mut commands: UnboundedReceiver<Command>, events: &mpsc::Sender<Eve
                         }
                     }
                 }
-                Command::Record if recording.is_none() && target.is_some() => {
+                Command::Record(audio) if recording.is_none() && target.is_some() => {
                     emit(Event::Starting);
                     let chosen = target.take().unwrap();
                     let result = output::recordings_dir().and_then(|directory|
-                        Recording::start(chosen.remote, chosen.node, chosen.size, encoder.unwrap(), &directory));
+                        Recording::start(chosen.remote, chosen.node, chosen.size, encoder.unwrap(), &directory, &audio));
                     match result {
                         Ok(active) => { recording = Some(active); announced = false; }
                         Err(error) => {
@@ -235,13 +236,17 @@ pub async fn capture_test() -> Result<()> {
             target.size,
             encoder,
             &output::recordings_dir()?,
+            &audio::Settings::default(),
         )?;
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if let Some(update) = active.poll() {
                 match update {
-                    Update::Eos => {
-                        println!("Saved {}", active.finish(true)?.display());
+                    Update::Eos | Update::SourceEnded => {
+                        println!(
+                            "Saved {}",
+                            active.finish(matches!(update, Update::Eos))?.display()
+                        );
                         return Ok(());
                     }
                     Update::Error(error) => bail!("Capture failed: {error}"),

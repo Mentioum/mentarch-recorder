@@ -2,7 +2,10 @@ use std::{path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use crate::worker::{Command, Event};
+use crate::{
+    audio,
+    worker::{Command, Event},
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -21,6 +24,13 @@ pub enum State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Show,
+    Settings,
+    ToggleMic,
+    ToggleDesktop,
+    StartSilent,
+    StartMic,
+    StartDesktop,
+    StartBoth,
     Background,
     Toggle,
     Start,
@@ -37,6 +47,13 @@ impl Action {
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value.trim_start_matches('-') {
             "show" => Self::Show,
+            "settings" => Self::Settings,
+            "toggle-mic" => Self::ToggleMic,
+            "toggle-desktop" => Self::ToggleDesktop,
+            "start-silent" => Self::StartSilent,
+            "start-mic" => Self::StartMic,
+            "start-desktop" => Self::StartDesktop,
+            "start-both" => Self::StartBoth,
             "background" => Self::Background,
             "toggle" => Self::Toggle,
             "start" => Self::Start,
@@ -54,6 +71,13 @@ impl Action {
     pub fn name(self) -> &'static str {
         match self {
             Self::Show => "show",
+            Self::Settings => "settings",
+            Self::ToggleMic => "toggle-mic",
+            Self::ToggleDesktop => "toggle-desktop",
+            Self::StartSilent => "start-silent",
+            Self::StartMic => "start-mic",
+            Self::StartDesktop => "start-desktop",
+            Self::StartBoth => "start-both",
             Self::Background => "background",
             Self::Toggle => "toggle",
             Self::Start => "start",
@@ -70,6 +94,8 @@ impl Action {
 
 pub struct Model {
     pub state: State,
+    pub audio: audio::Settings,
+    pub active_audio: audio::Settings,
     pub detail: String,
     pub target: String,
     pub encoder: String,
@@ -85,6 +111,8 @@ impl Default for Model {
     fn default() -> Self {
         Self {
             state: State::Idle,
+            audio: audio::Settings::default(),
+            active_audio: audio::Settings::default(),
             detail: String::new(),
             target: String::new(),
             encoder: String::new(),
@@ -133,7 +161,8 @@ impl Model {
             }
             Action::Record if self.state == State::Ready => {
                 self.state = State::Starting;
-                Some(Command::Record)
+                self.active_audio = self.audio.clone();
+                Some(Command::Record(self.active_audio.clone()))
             }
             Action::Stop if matches!(self.state, State::Starting | State::Recording) => {
                 self.state = State::Saving;
@@ -232,6 +261,20 @@ pub fn format_elapsed(duration: Duration) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn audio_options_are_frozen_for_the_active_recording() {
+        let mut model = Model::default();
+        model.audio.microphone = true;
+        model.request(Action::Choose);
+        model.event(Event::Ready("Window".into()));
+        let Some(Command::Record(settings)) = model.request(Action::Record) else {
+            panic!("Expected record command");
+        };
+        model.audio.microphone = false;
+        model.audio.desktop = true;
+        assert!(settings.microphone && !settings.desktop);
+        assert!(model.active_audio.microphone && !model.active_audio.desktop);
+    }
+    #[test]
     fn bar_toggle_selects_then_records_and_stops_once() {
         let mut model = Model::default();
         assert!(matches!(
@@ -243,7 +286,7 @@ mod tests {
         assert_eq!(model.state, State::Selecting);
         assert!(matches!(
             model.event(Event::Ready("Window".into())),
-            Some(Command::Record)
+            Some(Command::Record(_))
         ));
         assert!(matches!(model.request(Action::Toggle), Some(Command::Stop)));
         model.event(Event::Recording {
@@ -273,7 +316,7 @@ mod tests {
         assert!(model.saved.is_some());
         assert!(matches!(
             model.request(Action::Record),
-            Some(Command::Record)
+            Some(Command::Record(_))
         ));
     }
 }

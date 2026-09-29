@@ -29,3 +29,11 @@
 .recorder-window button:disabled { color: #7f849c; background: @recorder_surface; border-color: @recorder_border; }
 .recorder-window .pill { border-radius: 6px; font-weight: 600; }
 .recorder-window selection { background: @recorder_accent; color: @recorder_base; }
+.recorder-window checkbutton { color: @recorder_text; }
+.recorder-window checkbutton check, .recorder-window checkbutton radio { background: @recorder_surface; border: 1px solid @recorder_border; }
+.recorder-window checkbutton check:checked, .recorder-window checkbutton radio:checked { background: @recorder_accent; color: @recorder_base; border-color: @recorder_accent; }
+.audio-settings .section-title { font-weight: 650; font-size: 16px; }
+.audio-settings .device-row { background: @recorder_inset; border: 1px solid @recorder_border; border-radius: 6px; padding: 12px; }
+.audio-settings progressbar trough { background: @recorder_surface; border: none; border-radius: 4px; min-height: 7px; }
+.audio-settings progressbar progress { background: #a6e3a1; border: none; border-radius: 4px; min-height: 7px; min-width: 0; margin: 0; padding: 0; }
+.audio-settings progressbar.loud progress { background: @recorder_red; }

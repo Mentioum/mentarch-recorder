@@ -36,6 +36,12 @@ Automated checks do not establish compositor behavior. The portal picker and des
 | Unwritable `~/Videos/Recordings/` | Actionable error; no background recording remains |
 | Broken hardware encoder | Encoder probe falls back to a working software encoder |
 | Downstream encoder or storage failure | No false saved state; error identifies retained partial output |
+| Mic off / desktop off | Video only; no audio capture stream or audio track |
+| Mic only / desktop only / both | Expected sources in one playable Opus track; audio and video share timestamps |
+| Audio settings open / close | Per-device meters update; every preview capture stream disappears on close |
+| Audio preferences change during capture | Active audio remains unchanged; next recording uses new preferences |
+| Selected device missing | Actionable error; no substitution of another input |
+| Audio routing changes | Server refuses the move or recorder rejects buffers from the unexpected device |
 
 Do not change permissions on existing personal recordings for testing. Use isolated temporary directories for failure tests.
 
@@ -67,3 +73,15 @@ Do not change permissions on existing personal recordings for testing. Use isola
 - `--waybar` works without a display. Isolated runtime-file checks confirmed that an expired heartbeat or missing recorder process cannot be reported as active recording.
 - Live widget flow passed: the user clicked the camera and approved the test window; recording began automatically with the controls hidden. Reloading Waybar preserved PID 492640 and advanced the timer from 21 to 24 seconds without stalled capture. Executing the widget's same left-click command stopped and saved the recording. The bar returned the green saved state; the service logged no errors.
 - The resulting `Recording_2026-09-28_17-53-36.mkv` was H.264, 832 × 1080, 661 frames, 22.03 seconds. A complete FFmpeg decode passed. The test target was closed after successful finalization.
+
+## Audio validation
+
+2026-09-28, same desktop with PipeWire's PulseAudio server:
+
+- All 19 unit/controller/GStreamer tests passed, including all three audio modes, level-meter accuracy and teardown, settings snapshots for active capture, missing-device rejection, explicit stop, and video ending while live audio continues. Clippy across all targets/features and formatting passed.
+- `python3 scripts/test_audio.py` exercised the actual Pulse capture path through disposable virtual devices. A 440 Hz microphone signal and an 880 Hz desktop signal were isolated correctly when selected alone and both appeared in the mixture. The combined signals each had half amplitude, without clipping. Every recording decoded fully; audio/video start and end times were within the test's 250/300 ms bounds. The server rejected attempts to reroute a pinned capture stream.
+- The test fixtures do not capture physical microphones and remove their virtual devices and recordings when finished. Real settings meters were separately checked on the machine's two microphone inputs and speaker monitor. System device volumes were unchanged by preview/capture creation.
+- Audio settings were visually checked against Charcoal Lavender. Closing the settings window removed all its Pulse capture streams. The final GTK styling produced no warnings.
+- Both Waybar checkbox actions were exercised through their installed commands. JSON preferences, generated GTK check states, and live recorder status agreed after each change; toggling preferences did not open audio capture streams. Original silent defaults were restored afterward.
+- A failed stop test exposed duplicate EOS delivery after video ended before audio. Finalization now recognizes already-ended pads and drains the remaining sources before publishing the file.
+- The final real-window-plus-audio check passed after the user approved the portal picker with default microphone and desktop output enabled. `Recording_2026-09-28_21-35-19.mkv` saved successfully: 10.97 seconds, 329 H.264 frames at 1668 × 1080, and stereo 48 kHz Opus audio. Both tracks start at timestamp zero and the entire file decoded without errors. This verifies real portal video and audio finalize together; source isolation and mixing were verified separately with the controlled tones above. The test window was closed afterward; the user's enabled microphone and desktop preferences were preserved.

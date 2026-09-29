@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use gstreamer::{self as gst, prelude::*};
 
-use crate::output::Output;
+use crate::{audio, output::Output};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Encoder {
@@ -119,6 +119,7 @@ impl Drop for PipelineGuard {
 
 pub enum Update {
     Eos,
+    SourceEnded,
     Error(String),
 }
 
@@ -130,6 +131,8 @@ pub struct Recording {
     started: Instant,
     frames: Arc<AtomicU64>,
     last_frame_ms: Arc<AtomicU64>,
+    video_eos: Arc<AtomicBool>,
+    audio_queues: Vec<String>,
 }
 
 /// Keep a stable, even-sized encoding canvas when the selected window resizes.
@@ -151,6 +154,7 @@ impl Recording {
         size: Option<(i32, i32)>,
         encoder: Encoder,
         directory: &Path,
+        audio: &audio::Settings,
     ) -> Result<Self> {
         let source = gst::ElementFactory::make("pipewiresrc")
             .name("capture")
@@ -169,7 +173,19 @@ impl Recording {
         // resize/format negotiation too; its "eos" mode flushes the entire
         // pipeline, which can truncate an already-written Matroska file.
         // Portal Closed and bus errors handle actual capture loss instead.
-        Self::build(source, Some(remote), size, encoder, directory)
+        let audio_sources = audio
+            .resolve()?
+            .iter()
+            .map(audio::source)
+            .collect::<Result<Vec<_>>>()?;
+        Self::build(
+            source,
+            Some(remote),
+            size,
+            encoder,
+            directory,
+            audio_sources,
+        )
     }
 
     fn build(
@@ -178,13 +194,25 @@ impl Recording {
         size: Option<(i32, i32)>,
         encoder: Encoder,
         directory: &Path,
+        audio_sources: Vec<gst::Element>,
     ) -> Result<Self> {
         let output = Output::reserve(directory)?;
         let (width, height) = canvas(size);
-        let description = format!(
-            "queue name=input max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! videoconvert ! videoscale add-borders=true ! videorate ! video/x-raw,format={},width={width},height={height},framerate=30/1,pixel-aspect-ratio=1/1 ! {} ! identity name=encoded ! matroskamux ! filesink name=output sync=false",
+        let mut description = format!(
+            "queue name=input max-size-buffers=8 max-size-bytes=0 max-size-time=0 ! videoconvert ! videoscale add-borders=true ! videorate ! video/x-raw,format={},width={width},height={height},framerate=30/1,pixel-aspect-ratio=1/1 ! {} ! identity name=encoded ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=3000000000 ! mux.video_0 matroskamux name=mux ! filesink name=output sync=false",
             encoder.format, encoder.pipeline
         );
+        let audio_queues: Vec<_> = (0..audio_sources.len())
+            .map(|i| format!("audio_input_{i}"))
+            .collect();
+        if !audio_sources.is_empty() {
+            description.push_str(" audiomixer name=audio_mix ! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! opusenc bitrate=160000 ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=3000000000 ! mux.audio_0");
+            // Leave headroom when adding two full-scale sources together.
+            let gain = 1.0 / audio_sources.len() as f64;
+            for name in &audio_queues {
+                description.push_str(&format!(" queue name={name} max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! audioconvert ! audioresample ! audio/x-raw,format=F32LE,rate=48000,channels=2 ! volume volume={gain} ! audio_mix."));
+            }
+        }
         let pipeline = gst::parse::launch(&description)?
             .downcast::<gst::Pipeline>()
             .map_err(|_| anyhow::anyhow!("Could not construct recording pipeline"))?;
@@ -202,23 +230,47 @@ impl Recording {
             );
         guard.0.add(&source)?;
         source.link(&guard.0.by_name("input").context("Missing input queue")?)?;
+        for (source, queue) in audio_sources.iter().zip(&audio_queues) {
+            guard.0.add(source)?;
+            source.link(
+                &guard
+                    .0
+                    .by_name(queue)
+                    .context("Missing audio input queue")?,
+            )?;
+        }
+        // Video and every audio input use the same running-time clock.
+        guard.0.use_clock(Some(&gst::SystemClock::obtain()));
 
         let started = Instant::now();
         let frames = Arc::new(AtomicU64::new(0));
         let last_frame_ms = Arc::new(AtomicU64::new(0));
         let counter = frames.clone();
         let last = last_frame_ms.clone();
+        let video_eos = Arc::new(AtomicBool::new(false));
+        let ended = video_eos.clone();
         guard
             .0
             .by_name("encoded")
             .unwrap()
             .static_pad("src")
             .unwrap()
-            .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
-                counter.fetch_add(1, Ordering::Relaxed);
-                last.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                gst::PadProbeReturn::Ok
-            });
+            .add_probe(
+                gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
+                move |_, info| {
+                    if info.buffer().is_some() {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                        last.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    }
+                    if info
+                        .event()
+                        .is_some_and(|e| e.type_() == gst::EventType::Eos)
+                    {
+                        ended.store(true, Ordering::Relaxed);
+                    }
+                    gst::PadProbeReturn::Ok
+                },
+            );
         guard
             .0
             .set_state(gst::State::Playing)
@@ -230,6 +282,8 @@ impl Recording {
             started,
             frames,
             last_frame_ms,
+            video_eos,
+            audio_queues,
         })
     }
 
@@ -262,7 +316,9 @@ impl Recording {
                 _ => {}
             }
         }
-        None
+        self.video_eos
+            .load(Ordering::Relaxed)
+            .then_some(Update::SourceEnded)
     }
 
     pub fn finish(mut self, already_eos: bool) -> Result<PathBuf> {
@@ -271,8 +327,22 @@ impl Recording {
             if !already_eos {
                 // Inject at the queue, so a closed/disconnected PipeWire source
                 // cannot prevent the encoder and muxer from draining.
-                let queue = self.pipeline.0.by_name("input").unwrap();
-                if !queue.send_event(gst::event::Eos::new()) {
+                let mut accepted = true;
+                for name in self
+                    .audio_queues
+                    .iter()
+                    .map(String::as_str)
+                    .chain(std::iter::once("input"))
+                {
+                    let queue = self.pipeline.0.by_name(name).unwrap();
+                    let sink = queue.static_pad("sink").unwrap();
+                    if !sink.pad_flags().contains(gst::PadFlags::EOS)
+                        && !queue.send_event(gst::event::Eos::new())
+                    {
+                        accepted &= sink.pad_flags().contains(gst::PadFlags::EOS);
+                    }
+                }
+                if !accepted {
                     bail!("The encoder refused to stop");
                 }
                 wait_for_eos(&self.pipeline.0, Duration::from_secs(10))?;
@@ -327,14 +397,160 @@ pub fn self_test(directory: &Path) -> Result<PathBuf> {
     let source = gst::ElementFactory::make("videotestsrc")
         .property("num-buffers", 90i32)
         .build()?;
-    let recording = Recording::build(source, None, Some((640, 360)), encoder, directory)?;
+    let recording = Recording::build(
+        source,
+        None,
+        Some((640, 360)),
+        encoder,
+        directory,
+        Vec::new(),
+    )?;
     wait_for_eos(&recording.pipeline.0, Duration::from_secs(15))?;
     recording.finish(true)
+}
+
+/// Synthetic tones exercise each audio mode without opening real microphones.
+pub fn self_test_audio(directory: &Path) -> Result<Vec<PathBuf>> {
+    let encoder = select_encoder()?;
+    let mut paths = Vec::new();
+    for frequencies in [vec![440.0], vec![880.0], vec![440.0, 880.0]] {
+        let video = gst::ElementFactory::make("videotestsrc")
+            .property("num-buffers", 90i32)
+            .build()?;
+        let sources = frequencies
+            .iter()
+            .map(|frequency| {
+                gst::ElementFactory::make("audiotestsrc")
+                    .property("freq", *frequency)
+                    .property("volume", 0.4f64)
+                    .property("samplesperbuffer", 960i32)
+                    .property("num-buffers", 150i32)
+                    .build()
+                    .map_err(Into::into)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let recording =
+            Recording::build(video, None, Some((640, 360)), encoder, directory, sources)?;
+        wait_for_eos(&recording.pipeline.0, Duration::from_secs(15))?;
+        paths.push(recording.finish(true)?);
+    }
+    Ok(paths)
+}
+
+/// Capture configured audio against a synthetic video for hardware diagnostics.
+pub fn audio_device_test(directory: &Path, settings: &audio::Settings) -> Result<PathBuf> {
+    let sources = settings
+        .resolve()?
+        .iter()
+        .map(audio::source)
+        .collect::<Result<Vec<_>>>()?;
+    if sources.is_empty() {
+        bail!("Enable an audio source in Audio settings first");
+    }
+    let video = gst::ElementFactory::make("videotestsrc")
+        .property("is-live", true)
+        .build()?;
+    let recording = Recording::build(
+        video,
+        None,
+        Some((640, 360)),
+        select_encoder()?,
+        directory,
+        sources,
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Some(Update::Error(error)) = recording.poll() {
+            bail!("Audio test failed: {error}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    recording.finish(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decode_audio_video(path: &Path) {
+        let pipeline = gst::parse::launch("filesrc name=file ! matroskademux name=demux demux.video_0 ! queue ! decodebin ! identity name=video ! fakesink sync=false demux.audio_0 ! queue ! opusdec ! identity name=audio ! fakesink sync=false").unwrap().downcast::<gst::Pipeline>().unwrap();
+        let guard = PipelineGuard(pipeline);
+        guard
+            .0
+            .by_name("file")
+            .unwrap()
+            .set_property("location", path.to_str().unwrap());
+        let counts: Vec<_> = ["audio", "video"]
+            .into_iter()
+            .map(|name| {
+                let count = Arc::new(AtomicU64::new(0));
+                let output = count.clone();
+                guard
+                    .0
+                    .by_name(name)
+                    .unwrap()
+                    .static_pad("src")
+                    .unwrap()
+                    .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                        output.fetch_add(1, Ordering::Relaxed);
+                        gst::PadProbeReturn::Ok
+                    });
+                count
+            })
+            .collect();
+        guard.0.set_state(gst::State::Playing).unwrap();
+        wait_for_eos(&guard.0, Duration::from_secs(10)).unwrap();
+        assert!(counts.iter().all(|count| count.load(Ordering::Relaxed) > 5));
+    }
+
+    #[test]
+    #[ignore = "requires GStreamer audio/video plugins"]
+    fn each_audio_mode_encodes_and_decodes_both_tracks() {
+        gst::init().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        for path in self_test_audio(directory.path()).unwrap() {
+            decode_audio_video(&path);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires GStreamer audio/video plugins"]
+    fn audio_drains_on_stop_and_when_video_ends_first() {
+        gst::init().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        for video_ends in [false, true] {
+            let source = gst::ElementFactory::make("videotestsrc")
+                .property("is-live", true)
+                .property("num-buffers", if video_ends { 12i32 } else { -1i32 })
+                .build()
+                .unwrap();
+            let audio = (0..2)
+                .map(|_| {
+                    gst::ElementFactory::make("audiotestsrc")
+                        .property("is-live", true)
+                        .build()
+                        .unwrap()
+                })
+                .collect();
+            let recording = Recording::build(
+                source,
+                None,
+                Some((320, 240)),
+                select_encoder().unwrap(),
+                directory.path(),
+                audio,
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(650));
+            if video_ends {
+                assert!(matches!(recording.poll(), Some(Update::SourceEnded)));
+            } else {
+                assert!(recording.poll().is_none());
+            }
+            let path = recording.finish(false).unwrap();
+            decode_audio_video(&path);
+        }
+    }
     #[test]
     fn canvas_handles_odd_sizes_resize_and_hidpi() {
         assert_eq!(canvas(Some((801, 603))), (800, 602));
@@ -395,6 +611,7 @@ mod tests {
             Some((641, 361)),
             select_encoder().unwrap(),
             dir.path(),
+            Vec::new(),
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(400));
@@ -438,13 +655,21 @@ mod tests {
             pipeline: "mentarch-missing-encoder",
             format: "I420",
         };
-        assert!(Recording::build(source, None, None, broken, dir.path()).is_err());
+        assert!(Recording::build(source, None, None, broken, dir.path(), Vec::new()).is_err());
         assert_eq!(dir.path().read_dir().unwrap().count(), 0);
         let occupied = dir.path().join("occupied");
         std::fs::write(&occupied, b"file").unwrap();
         let source = gst::ElementFactory::make("videotestsrc").build().unwrap();
         assert!(
-            Recording::build(source, None, None, select_encoder().unwrap(), &occupied).is_err()
+            Recording::build(
+                source,
+                None,
+                None,
+                select_encoder().unwrap(),
+                &occupied,
+                Vec::new()
+            )
+            .is_err()
         );
     }
 

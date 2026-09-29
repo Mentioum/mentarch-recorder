@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import subprocess
 
 
 def load_jsonc(text):
@@ -30,9 +31,10 @@ def install():
     if config is None:
         raise SystemExit('No existing Waybar config found; create a bar first.')
     binary = home / '.local/bin/mentarch-recorder'
-    menu = data_home / 'mentarch-recorder/waybar-menu.ui'
-    if not binary.is_file() or not menu.is_file():
+    menu = config_home / 'mentarch-recorder/waybar-menu.ui'
+    if not binary.is_file() or not (data_home / 'mentarch-recorder/waybar-menu.ui').is_file():
         raise SystemExit('Run sh scripts/install.sh first.')
+    subprocess.run([str(binary), '--write-waybar-menu'], check=True)
     if not shutil.which('systemd-run'):
         raise SystemExit('systemd-run is required to keep recording across bar reloads.')
     content = load_jsonc(config.read_text())
@@ -62,7 +64,7 @@ def install():
         'on-click': action('toggle'), 'on-click-middle': action('open'),
         'menu': 'on-click-right', 'menu-file': str(menu),
         'menu-actions': {name: action(name) for name in
-                         ('start', 'stop', 'cancel', 'open', 'folder', 'show', 'quit')},
+                         ('start', 'stop', 'cancel', 'toggle-mic', 'toggle-desktop', 'settings', 'open', 'folder', 'show', 'quit')},
     }}
     style = directory / 'style.css'
     old_style = style.read_text() if style.exists() else ''

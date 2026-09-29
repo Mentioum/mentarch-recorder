@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    audio,
     model::{Model, State, format_elapsed},
     output,
 };
@@ -22,6 +23,8 @@ pub struct Snapshot {
     pub saved: Option<PathBuf>,
     pub pid: Option<u32>,
     pub updated_at: u64,
+    #[serde(default)]
+    pub audio: audio::Settings,
 }
 
 fn now() -> u64 {
@@ -47,6 +50,14 @@ pub fn publish(model: &Model, stopped: bool) -> Result<()> {
         saved: model.saved.clone(),
         pid: (!stopped).then_some(std::process::id()),
         updated_at: now(),
+        audio: if matches!(
+            model.state,
+            State::Starting | State::Recording | State::Saving
+        ) {
+            model.active_audio.clone()
+        } else {
+            model.audio.clone()
+        },
     };
     let path = path()?;
     fs::create_dir_all(path.parent().unwrap())?;
@@ -87,7 +98,7 @@ pub fn read() -> Snapshot {
 
 pub fn waybar(snapshot: &Snapshot) -> serde_json::Value {
     let elapsed = format_elapsed(Duration::from_secs(snapshot.elapsed_seconds));
-    let (text, class, title) = match snapshot.state {
+    let (mut text, class, title) = match snapshot.state {
         State::Idle => (
             "".into(),
             "idle",
@@ -140,7 +151,21 @@ pub fn waybar(snapshot: &Snapshot) -> serde_json::Value {
             format!("{}\nClick to try again", snapshot.detail),
         ),
     };
-    let tooltip = format!("{title}\nRight-click: recording menu\nMiddle-click: open latest video");
+    let settings = if snapshot.pid.is_none() {
+        audio::Settings::load().unwrap_or_default()
+    } else {
+        snapshot.audio.clone()
+    };
+    let tooltip = format!(
+        "{title}\nAudio: {}\nRight-click: recording menu\nMiddle-click: open latest video",
+        settings.summary()
+    );
+    if settings.microphone {
+        text.push_str(" ");
+    }
+    if settings.desktop {
+        text.push_str(" ");
+    }
     serde_json::json!({"text":text, "class":class, "alt":class, "tooltip":gtk::glib::markup_escape_text(&tooltip).as_str()})
 }
 

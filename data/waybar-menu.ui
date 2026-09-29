@@ -7,6 +7,11 @@
     <child><object class="GtkMenuItem" id="stop"><property name="label">Stop &amp; save</property></object></child>
     <child><object class="GtkMenuItem" id="cancel"><property name="label">Cancel selection</property></object></child>
     <child><object class="GtkSeparatorMenuItem"/></child>
+    <child><object class="GtkMenuItem"><property name="label">Audio for next recording</property><property name="sensitive">False</property></object></child>
+    <child><object class="GtkCheckMenuItem" id="toggle-mic"><property name="label">Record microphone</property><property name="active">False</property><!--MIC--></object></child>
+    <child><object class="GtkCheckMenuItem" id="toggle-desktop"><property name="label">Record desktop audio</property><property name="active">False</property><!--DESKTOP--></object></child>
+    <child><object class="GtkMenuItem" id="settings"><property name="label">Audio settings…</property></object></child>
+    <child><object class="GtkSeparatorMenuItem"/></child>
     <child><object class="GtkMenuItem" id="open"><property name="label">Open latest video</property></object></child>
     <child><object class="GtkMenuItem" id="folder"><property name="label">Show recordings folder</property></object></child>
     <child><object class="GtkSeparatorMenuItem"/></child>

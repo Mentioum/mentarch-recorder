@@ -8,6 +8,7 @@ use gtk::{gio, glib, prelude::*};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
+    audio, audio_settings,
     model::{Action, Model, State, format_elapsed},
     status,
     worker::{self, Command, Event},
@@ -27,6 +28,10 @@ struct View {
     actions: gtk::Box,
     open: gtk::Button,
     folder: gtk::Button,
+    settings: gtk::Button,
+    microphone: gtk::CheckButton,
+    desktop: gtk::CheckButton,
+    audio_detail: gtk::Label,
 }
 
 struct Controller {
@@ -37,6 +42,8 @@ struct Controller {
     hold: RefCell<Option<gio::ApplicationHoldGuard>>,
     status_error_reported: Cell<bool>,
     notice: RefCell<Option<String>>,
+    settings_window: glib::WeakRef<gtk::ApplicationWindow>,
+    config_error: RefCell<Option<String>>,
 }
 
 pub fn run(initial: Action) {
@@ -76,6 +83,9 @@ fn make_view(app: &gtk::Application) -> View {
     window.add_css_class("recorder-window");
     let header = gtk::HeaderBar::new();
     header.set_title_widget(Some(&gtk::Label::new(Some("Window Recorder"))));
+    let settings = gtk::Button::from_icon_name("emblem-system-symbolic");
+    settings.set_tooltip_text(Some("Audio settings and device meters"));
+    header.pack_start(&settings);
     window.set_titlebar(Some(&header));
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
@@ -113,6 +123,19 @@ fn make_view(app: &gtk::Application) -> View {
     card.append(&status_row);
     content.append(&card);
 
+    let audio_row = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+    audio_row.set_halign(gtk::Align::Center);
+    let microphone = gtk::CheckButton::with_label("Microphone");
+    let desktop = gtk::CheckButton::with_label("Desktop audio");
+    audio_row.append(&microphone);
+    audio_row.append(&desktop);
+    content.append(&audio_row);
+    let audio_detail = gtk::Label::new(None);
+    audio_detail.add_css_class("caption");
+    audio_detail.add_css_class("dim-label");
+    audio_detail.set_wrap(true);
+    content.append(&audio_detail);
+
     let primary = gtk::Button::with_mnemonic("_Choose window");
     primary.add_css_class("suggested-action");
     primary.add_css_class("pill");
@@ -129,7 +152,7 @@ fn make_view(app: &gtk::Application) -> View {
     actions.append(&folder);
     content.append(&actions);
     let footer = gtk::Label::new(Some(
-        "Video only · ~/Videos/Recordings\nClose hides this window · Ctrl+Q quits",
+        "~/Videos/Recordings\nClose hides this window · Ctrl+Q quits",
     ));
     footer.add_css_class("dim-label");
     footer.add_css_class("caption");
@@ -152,23 +175,46 @@ fn make_view(app: &gtk::Application) -> View {
         actions,
         open,
         folder,
+        settings,
+        microphone,
+        desktop,
+        audio_detail,
     }
 }
 
 fn build(app: &gtk::Application) {
     let view = make_view(app);
     let (commands, events) = worker::spawn();
+    let mut model = Model::new(status::latest_video());
+    let initial_notice = match audio::Settings::load() {
+        Ok(settings) => {
+            model.audio = settings;
+            None
+        }
+        Err(error) => Some(format!(
+            "Audio settings could not be loaded; recording is video only. {error:#}"
+        )),
+    };
     let controller = Rc::new(Controller {
         view,
-        model: RefCell::new(Model::new(status::latest_video())),
+        model: RefCell::new(model),
         commands,
         app: app.clone(),
         hold: RefCell::new(Some(app.hold())),
         status_error_reported: Cell::new(false),
-        notice: RefCell::new(None),
+        notice: RefCell::new(initial_notice.clone()),
+        config_error: RefCell::new(initial_notice),
+        settings_window: glib::WeakRef::new(),
     });
     for action in [
         Action::Show,
+        Action::Settings,
+        Action::ToggleMic,
+        Action::ToggleDesktop,
+        Action::StartSilent,
+        Action::StartMic,
+        Action::StartDesktop,
+        Action::StartBoth,
         Action::Background,
         Action::Toggle,
         Action::Start,
@@ -209,11 +255,30 @@ fn build(app: &gtk::Application) {
         (&controller.view.secondary, Action::Cancel),
         (&controller.view.open, Action::Open),
         (&controller.view.folder, Action::Folder),
+        (&controller.view.settings, Action::Settings),
     ] {
         let weak = Rc::downgrade(&controller);
         button.connect_clicked(move |_| {
             if let Some(controller) = weak.upgrade() {
                 controller.dispatch(action);
+            }
+        });
+    }
+    for (button, action) in [
+        (&controller.view.microphone, Action::ToggleMic),
+        (&controller.view.desktop, Action::ToggleDesktop),
+    ] {
+        let weak = Rc::downgrade(&controller);
+        button.connect_toggled(move |button| {
+            if let Some(controller) = weak.upgrade() {
+                let enabled = if action == Action::ToggleMic {
+                    controller.model.borrow().audio.microphone
+                } else {
+                    controller.model.borrow().audio.desktop
+                };
+                if button.is_active() != enabled {
+                    controller.dispatch(action);
+                }
             }
         });
     }
@@ -272,8 +337,63 @@ fn build(app: &gtk::Application) {
 
 impl Controller {
     fn dispatch(self: &Rc<Self>, action: Action) {
+        if matches!(
+            action,
+            Action::Toggle | Action::Start | Action::Choose | Action::Record
+        ) && let Some(error) = self.config_error.borrow().as_ref()
+        {
+            self.show_notice(format!(
+                "{error}\nOpen Audio settings and save your choices before recording."
+            ));
+            return;
+        }
         match action {
             Action::Show => self.view.window.present(),
+            Action::Settings => {
+                if let Some(window) = self.settings_window.upgrade().filter(|w| w.is_visible()) {
+                    window.present();
+                } else {
+                    let weak = Rc::downgrade(self);
+                    let window = audio_settings::show(
+                        &self.app,
+                        self.model.borrow().audio.clone(),
+                        move |settings| {
+                            let controller = weak
+                                .upgrade()
+                                .ok_or_else(|| anyhow::anyhow!("Recorder has closed"))?;
+                            controller.apply_audio(settings)
+                        },
+                    );
+                    self.settings_window.set(Some(&window));
+                }
+            }
+            Action::ToggleMic | Action::ToggleDesktop => {
+                let mut settings = self.model.borrow().audio.clone();
+                if action == Action::ToggleMic {
+                    settings.microphone = !settings.microphone;
+                } else {
+                    settings.desktop = !settings.desktop;
+                }
+                if let Err(error) = self.apply_audio(settings) {
+                    self.show_notice(format!("Could not update audio options: {error:#}"));
+                }
+            }
+            Action::StartSilent | Action::StartMic | Action::StartDesktop | Action::StartBoth => {
+                if matches!(
+                    self.model.borrow().state,
+                    State::Idle | State::Saved | State::Error | State::Ready
+                ) {
+                    let mut settings = self.model.borrow().audio.clone();
+                    settings.microphone = matches!(action, Action::StartMic | Action::StartBoth);
+                    settings.desktop = matches!(action, Action::StartDesktop | Action::StartBoth);
+                    match self.apply_audio(settings) {
+                        Ok(()) => self.dispatch(Action::Start),
+                        Err(error) => {
+                            self.show_notice(format!("Could not update audio options: {error:#}"))
+                        }
+                    }
+                }
+            }
             Action::Background => {}
             Action::Open | Action::Folder => {
                 self.open(action == Action::Folder);
@@ -292,6 +412,15 @@ impl Controller {
                 self.refresh();
             }
         }
+    }
+
+    fn apply_audio(&self, settings: audio::Settings) -> anyhow::Result<()> {
+        settings.save()?;
+        self.config_error.borrow_mut().take();
+        self.notice.borrow_mut().take();
+        self.model.borrow_mut().audio = settings.clone();
+        self.refresh();
+        audio::write_menu(&settings, true)
     }
 
     fn send(&self, command: Command) {
@@ -372,6 +501,20 @@ impl Controller {
 
 impl View {
     fn render(&self, model: &Model) {
+        self.microphone.set_active(model.audio.microphone);
+        self.desktop.set_active(model.audio.desktop);
+        let active = matches!(
+            model.state,
+            State::Starting | State::Recording | State::Saving
+        );
+        self.audio_detail.set_text(&if active {
+            format!(
+                "Capturing: {} · Changes apply next time",
+                model.active_audio.summary()
+            )
+        } else {
+            format!("Next recording: {}", model.audio.summary())
+        });
         let (title, detail, button, status) = match model.state {
             State::Idle => (
                 "One window. One recording.",

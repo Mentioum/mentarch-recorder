@@ -5,6 +5,8 @@ edition = "2024"
 rust-version = "1.92"
 description = "A small native window recorder for Hyprland"
 license = "MIT"
+repository = "https://github.com/Mentioum/mentarch-recorder"
+readme = "README.md"
 
 [features]
 live-portal-tests = []

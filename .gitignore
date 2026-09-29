@@ -1,3 +1,14 @@
 /target/
 *.mkv
 *.mkv.part
+
+# Local recordings, credentials, and machine-specific test output.
+*.mp4
+*.webm
+*.wav
+*.flac
+.env
+.env.*
+!.env.example
+*.log
+__pycache__/

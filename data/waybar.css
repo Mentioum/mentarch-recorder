@@ -9,3 +9,5 @@
 #recorder-menu menuitem { padding: 7px 12px; border-radius: 4px; }
 #recorder-menu menuitem:hover { background: #313244; color: #b4befe; }
 #recorder-menu separator { background: #45475a; min-height: 1px; margin: 4px 8px; }
+#recorder-menu check { color: #b4befe; border: 1px solid #45475a; min-width: 12px; min-height: 12px; }
+#recorder-menu check:checked { background: #b4befe; color: #1e1e2e; }
